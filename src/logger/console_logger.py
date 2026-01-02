@@ -24,7 +24,7 @@ class ConsoleLogger:
     log_dir: str = "logs"
     log_file: str = "bot.log"
 
-    console: Console = field(default_factory=Console, init=False)
+    console: Console = field(default_factory=lambda: Console(encoding="utf-8"), init=False)
     file_logger: logging.Logger = field(default_factory=lambda: logging.getLogger("bot"), init=False)
 
     def __post_init__(self) -> None:
@@ -34,7 +34,11 @@ class ConsoleLogger:
         self.file_logger.propagate = False
         self.file_logger.handlers.clear()
 
-        fh = logging.FileHandler(os.path.join(self.log_dir, self.log_file))
+        # File Handler - add encoding='utf-8'
+        fh = logging.FileHandler(
+            os.path.join(self.log_dir, self.log_file),
+            encoding='utf-8'
+        )
         fh.setLevel(logging.INFO)
         fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
         self.file_logger.addHandler(fh)
