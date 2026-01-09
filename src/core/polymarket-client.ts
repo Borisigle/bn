@@ -1,5 +1,6 @@
 import { AsyncRateLimiter } from './rate-limiter.js';
 import { BinaryMarket } from '../strategies/arbitrage-pure/types.js';
+import { ConsoleLogger } from './console-logger.js';
 import crypto from 'crypto';
 
 export interface OrderConfig {
@@ -22,6 +23,7 @@ export interface Order {
 
 export class PolymarketClientService {
     public gammaRateLimiter: AsyncRateLimiter;
+    private logger: ConsoleLogger;
 
     constructor(
         private apiKey: string = '',
@@ -32,47 +34,161 @@ export class PolymarketClientService {
         private mockMode: boolean = true
     ) {
         this.gammaRateLimiter = new AsyncRateLimiter(5, 1.0);
+        this.logger = new ConsoleLogger();
     }
 
     async getTopMarkets(limit: number = 1000): Promise<BinaryMarket[]> {
         if (this.mockMode) {
+            this.logger.logInfo(`Mock mode: Returning ${limit} mock markets`);
             return this.mockMarkets(limit);
         }
 
+        this.logger.logInfo(`Fetching ${limit} markets from Gamma API`);
+        
+        try {
+            return await this.fetchMarketsWithRetry(limit);
+        } catch (error) {
+            this.logger.logError(`Failed to fetch markets after retries: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            return [];
+        }
+    }
+
+    private async fetchMarketsWithRetry(limit: number, maxRetries: number = 3): Promise<BinaryMarket[]> {
         const markets: BinaryMarket[] = [];
         let offset = 0;
         const pageSize = Math.min(500, Math.max(1, limit));
+        let attempt = 0;
 
-        while (markets.length < limit) {
-            const params = new URLSearchParams({
-                limit: pageSize.toString(),
-                offset: offset.toString(),
-                active: 'true'
-            });
-            const url = `${this.gammaHost}/markets?${params.toString()}`;
-            
-            await this.gammaRateLimiter.acquire();
-            const resp = await fetch(url);
-            if (!resp.ok) break;
-            
-            const payload = await resp.json() as any;
-            const items = Array.isArray(payload) ? payload : (payload.markets || []);
-            
-            if (!items.length) break;
-
-            for (const item of items) {
-                const bm = this.parseBinaryMarket(item);
-                if (bm) {
-                    markets.push(bm);
-                    if (markets.length >= limit) break;
+        while (markets.length < limit && attempt < maxRetries) {
+            try {
+                const batch = await this.fetchMarketBatch(offset, pageSize, attempt + 1);
+                if (batch.length === 0) {
+                    this.logger.logInfo(`No more markets found at offset ${offset}`);
+                    break;
                 }
-            }
 
-            offset += items.length;
-            if (items.length < pageSize) break;
+                markets.push(...batch);
+                offset += batch.length;
+                
+                this.logger.logInfo(`Fetched ${batch.length} markets (total: ${markets.length}/${limit})`);
+                
+                if (batch.length < pageSize) {
+                    this.logger.logInfo(`Received partial batch, pagination complete`);
+                    break;
+                }
+
+                attempt = 0; // Reset attempt counter on successful batch
+            } catch (error) {
+                attempt++;
+                if (attempt >= maxRetries) {
+                    this.logger.logError(`Max retries reached (${maxRetries}) for offset ${offset}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+                    break;
+                }
+                
+                const backoffDelay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+                this.logger.logError(`Fetch attempt ${attempt} failed, retrying in ${backoffDelay}ms: ${error instanceof Error ? error.message : 'Unknown error'}`);
+                await this.sleep(backoffDelay);
+            }
         }
 
         return markets.slice(0, limit);
+    }
+
+    private async fetchMarketBatch(offset: number, pageSize: number, attempt: number): Promise<BinaryMarket[]> {
+        const params = new URLSearchParams({
+            limit: pageSize.toString(),
+            offset: offset.toString(),
+            active: 'true'
+        });
+        const url = `${this.gammaHost}/markets?${params.toString()}`;
+        
+        this.logger.logInfo(`Fetching markets batch (attempt ${attempt}): ${url}`);
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+        
+        const startTime = Date.now();
+        let response: Response;
+        let responseText: string;
+        
+        try {
+            // Add headers including User-Agent and authentication if available
+            const headers: Record<string, string> = {
+                'User-Agent': 'PolymarketClient/1.0',
+                'Accept': 'application/json',
+            };
+            
+            if (this.apiKey) {
+                headers['Authorization'] = `Bearer ${this.apiKey}`;
+            }
+            
+            this.logger.logInfo(`Request headers: ${JSON.stringify(headers, null, 2)}`);
+
+            response = await fetch(url, {
+                method: 'GET',
+                headers,
+                signal: controller.signal
+            });
+
+            const duration = Date.now() - startTime;
+            clearTimeout(timeoutId);
+            
+            this.logger.logInfo(`Response status: ${response.status} ${response.statusText}, took ${duration}ms`);
+            
+            if (!response.ok) {
+                responseText = await response.text();
+                this.logger.logError(`HTTP error ${response.status}: ${responseText.substring(0, 500)}`);
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            responseText = await response.text();
+            this.logger.logInfo(`Response body (${responseText.length} chars): ${responseText.substring(0, 500)}${responseText.length > 500 ? '...' : ''}`);
+            
+            let payload: any;
+            try {
+                payload = JSON.parse(responseText);
+            } catch (parseError) {
+                this.logger.logError(`Failed to parse JSON response: ${parseError}`);
+                throw new Error(`Invalid JSON response: ${parseError}`);
+            }
+
+            const items = Array.isArray(payload) ? payload : (payload.markets || []);
+            this.logger.logInfo(`Parsed ${items.length} items from response`);
+            
+            const markets: BinaryMarket[] = [];
+            
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                try {
+                    const bm = this.parseBinaryMarket(item);
+                    if (bm) {
+                        markets.push(bm);
+                    } else {
+                        this.logger.logInfo(`Skipped invalid market at index ${i}: ${JSON.stringify(item).substring(0, 100)}...`);
+                    }
+                } catch (parseError) {
+                    this.logger.logError(`Error parsing market at index ${i}: ${parseError}`);
+                }
+            }
+            
+            this.logger.logInfo(`Successfully parsed ${markets.length} valid markets from ${items.length} items`);
+            return markets;
+
+        } catch (error) {
+            clearTimeout(timeoutId);
+            
+            if (error instanceof Error && error.name === 'AbortError') {
+                this.logger.logError(`Request timed out after 15 seconds for URL: ${url}`);
+                throw new Error('Request timeout');
+            }
+            
+            this.logger.logError(`Network error fetching markets: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            throw error;
+        }
+    }
+
+    private sleep(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     async createMarketOrder(cfg: OrderConfig): Promise<Order> {
