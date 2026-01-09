@@ -99,6 +99,9 @@ class ConsoleLogger:
     def log_forced_close(self) -> None:
         self._log("⏰ FORCE CLOSE window reached - closing all positions", style="bold red")
 
+    def log_info(self, message: str) -> None:
+        self._log(message)
+
     def log_error(self, message: str) -> None:
         self._log(f"❌ {message}", style="bold red")
 
