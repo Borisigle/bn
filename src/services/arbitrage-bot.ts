@@ -14,6 +14,7 @@ export class ArbitrageBotService {
     private _balance: number = 0.0;
     private _tradeLogs: TradeLog[] = [];
     private _stopPromise: ((value: void) => void) | null = null;
+    private cycleCount: number = 0;
 
     constructor(
         private polyClient: PolymarketClientService,
@@ -60,55 +61,90 @@ export class ArbitrageBotService {
 
     async scanLoop(): Promise<void> {
         if (!this._running) return;
+        
+        const cycleStartTime = Date.now();
+        this.cycleCount++;
+        
+        console.log(`\n${'='.repeat(70)}`);
+        console.log(`📍 CYCLE #${this.cycleCount} | ${new Date().toISOString()}`);
+        console.log(`${'='.repeat(70)}`);
 
-        const minAmount = this.positionAmount();
-        if (this._balance < minAmount || minAmount <= 0) {
-            this.logger.logInfo(
-                `Balance too low to trade | balance=$${this._balance.toFixed(2)} position_size=$${this.config.position_size.toFixed(2)}`
-            );
-            return;
-        }
+        try {
+            // SCAN
+            const scanStartTime = Date.now();
+            console.log(`⏳ Starting scan...`);
 
-        const scanLimit = this.config.market_scan_limit;
-        this.logger.logInfo(`🔍 Scanning ${scanLimit} markets...`);
+            const scanLimit = this.config.market_scan_limit;
+            const opportunities = await this.detector.scanMarkets(scanLimit);
+            
+            const scanTime = Date.now() - scanStartTime;
+            console.log(`\n✅ Scan finished in ${(scanTime / 1000).toFixed(2)}s`);
+            console.log(`🎯 Found ${opportunities.length} opportunities`);
 
-        const opportunities = await this.detector.scanMarkets(scanLimit);
-        this.logger.logInfo(`🎯 Found ${opportunities.length} opportunities`);
-
-        for (const arb of opportunities) {
-            if (!this._running) break;
-
-            const amount = this.positionAmount();
-            if (amount <= 0) break;
-
-            this.logger.logInfo(
-                `⚡ Executing: ${arb.question || arb.market} (${(arb.profit * 100).toFixed(2)}% expected profit)`
-            );
-
-            const opStarted = Date.now();
-            const result = await this.executor.execute(arb, amount);
-            const opTime = (Date.now() - opStarted) / 1000;
-
-            if (result.success) {
-                this.updateBalance(result.profit);
-                this._tradeLogs.push({
-                    timestamp: new Date(),
-                    market: result.market,
-                    type: result.type,
-                    profit: result.profit,
-                    balance: this._balance,
-                    operation_time: opTime,
-                });
-                this.logger.logInfo(
-                    `✅ COMPLETED: +$${result.profit.toFixed(2)} profit | Balance: $${this._balance.toFixed(2)}`
-                );
-            } else {
-                this.logger.logError(`❌ FAILED: ${result.error}`);
+            if (opportunities.length === 0) {
+                console.log(`⏸️ No opportunities. Waiting for next cycle...\n`);
+                return;
             }
 
-            if (this.config.execution_delay_ms > 0) {
-                await new Promise((resolve) => setTimeout(resolve, this.config.execution_delay_ms));
+            // EXECUTE
+            console.log(`\n⚡ Executing ${opportunities.length} opportunities...`);
+            
+            let executedCount = 0;
+            let totalProfit = 0;
+            
+            for (const arb of opportunities.slice(0, 5)) {
+                if (!this._running) break;
+
+                const amount = this.positionAmount();
+                if (amount <= 0) {
+                    console.log(`⚠️ Balance too low to continue executing.`);
+                    break;
+                }
+
+                console.log(`\n  ⚡ [${executedCount + 1}/${Math.min(5, opportunities.length)}] ${arb.question || arb.market}`);
+                
+                const execStartTime = Date.now();
+                const result = await this.executor.execute(arb, amount);
+                const execTime = Date.now() - execStartTime;
+
+                if (result.success) {
+                    executedCount++;
+                    totalProfit += result.profit;
+                    this.updateBalance(result.profit);
+                    
+                    this._tradeLogs.push({
+                        timestamp: new Date(),
+                        market: result.market,
+                        type: result.type,
+                        profit: result.profit,
+                        balance: this._balance,
+                        operation_time: execTime / 1000,
+                    });
+                    
+                    console.log(`  ✅ +$${result.profit.toFixed(2)} (${(execTime / 1000).toFixed(2)}s) | Balance: $${this._balance.toFixed(2)}`);
+                } else {
+                    console.log(`  ❌ Failed: ${result.error}`);
+                }
+
+                if (this.config.execution_delay_ms > 0) {
+                    await new Promise((resolve) => setTimeout(resolve, this.config.execution_delay_ms));
+                }
             }
+            
+            // SUMMARY
+            const cycleTime = Date.now() - cycleStartTime;
+            console.log(`\n${'='.repeat(70)}`);
+            console.log(`📊 CYCLE #${this.cycleCount} SUMMARY`);
+            console.log(`├─ Total time: ${(cycleTime / 1000).toFixed(2)}s`);
+            console.log(`├─ Opportunities: ${opportunities.length}`);
+            console.log(`├─ Executed: ${executedCount}`);
+            console.log(`├─ Profit: +$${totalProfit.toFixed(2)}`);
+            console.log(`├─ Balance: $${this._balance.toFixed(2)}`);
+            console.log(`└─ Next cycle in 30 seconds...`);
+            console.log(`${'='.repeat(70)}\n`);
+
+        } catch (error) {
+            console.log(`\n❌ Cycle error:`, error);
         }
     }
 
