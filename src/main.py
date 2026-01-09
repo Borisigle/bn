@@ -37,7 +37,7 @@ async def arbitrage_pure_main() -> None:
     cfg = BotConfig.load()
     cfg.validate()
 
-    logger = ConsoleLogger()
+    logger = ConsoleLogger(log_level=os.getenv("LOG_LEVEL", "info"))
 
     poly = PolymarketClientService(
         api_key=cfg.polymarket_api_key,
