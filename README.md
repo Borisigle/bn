@@ -1,43 +1,60 @@
-# Polymarket 15-Min BTC Up/Down Arbitrage Bot (Paper Trading)
+# Polymarket Pure Arbitrage Bot
 
-A modular, production-oriented Python bot that monitors BTC price movement (Binance via CCXT), scans Polymarket 15-minute BTC Up/Down markets, and paper-trades a simple edge/spread strategy with risk controls.
+A modular TypeScript bot that monitors Polymarket for pure arbitrage opportunities (where the sum of YES and NO prices deviates from 1.0) and executes trades.
 
 ## Features
 
-- 15-minute market timer with forced close at minute 13
-- Binance connector (CCXT) with rolling price-change calculation
-- Polymarket connector (Gamma discovery + optional CLOB client)
-- Paper trading with compounding capital (default $100)
-- Risk management (stop loss / take profit / forced close)
-- Pretty console logging + file logs (`logs/bot.log`)
-- Unit tests for core logic
+- Scans 1000+ markets for mispricings.
+- Support for Long Arbitrage (YES + NO < 1) and Short Arbitrage (YES + NO > 1).
+- Paper trading mode with auto-compounding.
+- Mock mode for testing without external API calls.
+- Built with TypeScript and Polymarket CLOB SDK.
 
-## Quickstart
+## Installation
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
 
-cp .env.example .env
-# edit .env if desired
+2. Configure environment:
+   ```bash
+   cp .env.example .env
+   # Edit .env with your private key and configuration
+   ```
 
-python -m src.main
-```
+## Usage
 
-### Modes
+- **Development mode**:
+  ```bash
+  npm run dev
+  ```
 
-- `PAPER_TRADING=true` (default): simulated trades only.
-- `MOCK_MODE=true` (default): no external API calls; BTC and Polymarket prices are simulated so the bot can run anywhere.
-  - Set `MOCK_MODE=false` to use real Binance prices and attempt to discover Polymarket markets via Gamma.
-  - Real trading via the Polymarket CLOB requires API keys and additional configuration.
+- **Build**:
+  ```bash
+  npm run build
+  ```
 
-## Notes / Disclaimer
+- **Start**:
+  ```bash
+  npm run start
+  ```
 
-This repository is for educational purposes. Markets are risky. Do not deploy with real funds without careful review, monitoring, and thorough testing.
+## Configuration
 
-## Running tests
+The bot can be configured via `.env`:
 
-```bash
-pytest -q
-```
+- `POLYMARKET_PRIVATE_KEY`: Your wallet private key.
+- `STARTING_CAPITAL`: Initial capital for paper trading.
+- `POSITION_SIZE`: Amount per trade (if <= 1, interpreted as % of balance).
+- `MIN_PROFIT_THRESHOLD`: Minimum profit to execute a trade.
+- `PAPER_TRADING`: Set to `true` to simulate trades.
+- `MOCK_MODE`: Set to `true` to use simulated market data.
+
+## Logs
+
+Expected logs:
+- Scanning progress.
+- Opportunity detection details.
+- Execution status and profit/loss.
+- Balance updates.
