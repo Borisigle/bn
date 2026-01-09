@@ -1,11 +1,12 @@
 .env
+node_modules/
+dist/
+build/
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
-dist/
-build/
 .pytest_cache/
 .coverage
 htmlcov/
