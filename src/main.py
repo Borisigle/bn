@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import signal
 import sys
 import time
 from typing import Dict
@@ -10,14 +12,11 @@ if __package__ is None or __package__ == "":
     # Allow running via: python src/main.py
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from src.connectors.binance_connector import BinanceConnector
-from src.connectors.polymarket_connector import PolymarketConnector
-from src.core.arbitrage_engine import ArbitrageEngine
+from src.core.bot_config import BotConfig
 from src.core.config import Config
-from src.core.position_manager import PositionManager
-from src.core.risk_manager import RiskManager
-from src.core.timer import TradeTimer
+from src.core.polymarket_client import PolymarketClientService
 from src.logger.console_logger import ConsoleLogger
+from src.services.arbitrage_bot import ArbitrageBotService
 
 
 def _exit_prices_from_market_prices(market_prices: Dict[str, Dict[str, float]]) -> Dict[str, float]:
@@ -34,7 +33,59 @@ def _exit_prices_from_market_prices(market_prices: Dict[str, Dict[str, float]]) 
     return {"UP": _pick("UP"), "DOWN": _pick("DOWN")}
 
 
-def main() -> None:
+async def arbitrage_pure_main() -> None:
+    cfg = BotConfig.load()
+    cfg.validate()
+
+    logger = ConsoleLogger()
+
+    poly = PolymarketClientService(
+        api_key=cfg.polymarket_api_key,
+        api_secret=cfg.polymarket_api_secret,
+        host=cfg.polymarket_host,
+        gamma_host=cfg.gamma_host,
+        paper_trading=cfg.paper_trading,
+        mock_mode=cfg.mock_mode,
+    )
+    poly.gamma_rate_limiter.max_calls = cfg.gamma_rps
+
+    bot = ArbitrageBotService(poly, cfg, logger)
+
+    stop_event = asyncio.Event()
+
+    def _request_stop() -> None:
+        bot.stop()
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _request_stop)
+        except NotImplementedError:
+            # add_signal_handler is not available on some platforms.
+            pass
+
+    task = asyncio.create_task(bot.start())
+
+    await stop_event.wait()
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+def legacy_main() -> None:
+    """Legacy 15-minute BTC UP/DOWN strategy loop."""
+
+    from src.connectors.binance_connector import BinanceConnector
+    from src.connectors.polymarket_connector import PolymarketConnector
+    from src.core.arbitrage_engine import ArbitrageEngine
+    from src.core.position_manager import PositionManager
+    from src.core.risk_manager import RiskManager
+    from src.core.timer import TradeTimer
+
     cfg = Config.load()
     cfg.validate()
 
@@ -89,7 +140,9 @@ def main() -> None:
 
                     already_in_market = positions.get_open_position_for_market(market.id) is not None
                     if not already_in_market and arb.should_enter(opp, capital_available=positions.capital):
-                        size_usd = positions.capital * cfg.position_size
+                        cfg_size = float(cfg.position_size)
+                        size_usd = positions.capital * cfg_size if 0 < cfg_size <= 1 else min(cfg_size, positions.capital)
+
                         sltp = risk.calculate_sl_tp(opp.entry_price, opp.side)
                         pos = positions.open_position(
                             market_id=market.id,
@@ -158,6 +211,15 @@ def main() -> None:
         wins = sum(1 for t in all_trades if t.pnl > 0)
         losses = sum(1 for t in all_trades if t.pnl < 0)
         logger.log_summary(len(all_trades), wins, losses, total_pnl, positions.capital)
+
+
+def main() -> None:
+    mode = os.getenv("BOT_MODE", "ARBITRAGE_PURE").strip().upper()
+    if mode in {"LEGACY", "BTC_15M", "BTC15M"}:
+        legacy_main()
+        return
+
+    asyncio.run(arbitrage_pure_main())
 
 
 if __name__ == "__main__":
