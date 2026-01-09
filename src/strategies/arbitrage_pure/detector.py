@@ -8,6 +8,13 @@ from src.core.polymarket_client import PolymarketClientService
 from src.strategies.arbitrage_pure.types import Arbitrage, BinaryMarket
 
 
+class LoggerProtocol:
+    def log_debug(self, message: str) -> None: ...
+    def log_info(self, message: str) -> None: ...
+    def log_error(self, message: str) -> None: ...
+    def log_warning(self, message: str) -> None: ...
+
+
 @dataclass
 class ArbitragePureDetector:
     poly_client: PolymarketClientService
@@ -17,20 +24,111 @@ class ArbitragePureDetector:
     long_sum_threshold: float = 0.99
     short_sum_threshold: float = 1.01
 
+    logger: Optional[LoggerProtocol] = None
+
     async def scan_markets(self, limit: int = 1000) -> List[Arbitrage]:
-        markets = await self.poly_client.get_top_markets(limit=limit)
-
-        opportunities: List[Arbitrage] = []
-        for m in markets:
-            arb = self.analyze_market(m)
-            if arb is None:
-                continue
-            if arb.profit < self.min_profit_threshold:
-                continue
-            opportunities.append(arb)
-
-        opportunities.sort(key=lambda a: a.profit, reverse=True)
-        return opportunities
+        start_time = time.time()
+        
+        if self.logger:
+            self.logger.log_info("🔍 [SCAN START] Beginning market scan...")
+        
+        try:
+            # ===== FETCH MARKETS =====
+            fetch_start_time = time.time()
+            
+            if self.logger:
+                self.logger.log_debug("⏱️ [FETCH] Starting market fetch...")
+            
+            markets = await self.poly_client.get_top_markets(limit=limit)
+            
+            fetch_time = time.time() - fetch_start_time
+            fetch_time_ms = fetch_time * 1000
+            
+            if self.logger:
+                self.logger.log_debug(f"⏱️ [FETCH] Completed in {fetch_time:.2f}s ({fetch_time_ms:.0f}ms)")
+                self.logger.log_debug(f"📊 [FETCH] Got {len(markets)} markets")
+                if fetch_time > 0:
+                    self.logger.log_debug(f"📈 [FETCH] Speed: {(len(markets) / fetch_time):.1f} markets/sec")
+            
+            if len(markets) == 0:
+                if self.logger:
+                    self.logger.log_warning("⚠️ [FETCH] No markets returned from API")
+                return []
+            
+            # ===== ANALYZE MARKETS =====
+            analyze_start_time = time.time()
+            
+            if self.logger:
+                self.logger.log_debug(f"⏱️ [ANALYZE] Starting analysis of {len(markets)} markets...")
+            
+            opportunities: List[Arbitrage] = []
+            analyzed = 0
+            errors = 0
+            
+            for market in markets:
+                analyzed += 1
+                
+                # Log every 100 markets
+                if analyzed % 100 == 0 and self.logger:
+                    elapsed = time.time() - analyze_start_time
+                    speed = analyzed / elapsed if elapsed > 0 else 0
+                    self.logger.log_debug(
+                        f"📍 [ANALYZE] Progress: {analyzed}/{len(markets)} "
+                        f"({(analyzed / len(markets) * 100):.1f}%) - "
+                        f"{speed:.1f} markets/sec"
+                    )
+                
+                try:
+                    arb = self.analyze_market(market)
+                    if arb is None:
+                        continue
+                    if arb.profit < self.min_profit_threshold:
+                        continue
+                    opportunities.append(arb)
+                except Exception as error:
+                    errors += 1
+                    if errors <= 5 and self.logger:  # Log only first 5 errors
+                        self.logger.log_warning(f"⚠️ [ANALYZE] Error analyzing market {getattr(market, 'market', 'unknown')}: {error}")
+            
+            opportunities.sort(key=lambda a: a.profit, reverse=True)
+            
+            analyze_time = time.time() - analyze_start_time
+            analyze_time_ms = analyze_time * 1000
+            
+            if self.logger:
+                self.logger.log_debug(f"⏱️ [ANALYZE] Completed in {analyze_time:.2f}s ({analyze_time_ms:.0f}ms)")
+                self.logger.log_debug(f"📊 [ANALYZE] Errors: {errors}/{len(markets)}")
+                if analyze_time > 0:
+                    self.logger.log_debug(f"📈 [ANALYZE] Speed: {(len(markets) / analyze_time):.1f} markets/sec")
+            
+            # ===== SUMMARY =====
+            total_time = time.time() - start_time
+            total_time_ms = total_time * 1000
+            
+            if self.logger:
+                self.logger.log_info(
+                    f"🎯 [SCAN COMPLETE] Found {len(opportunities)} opportunities "
+                    f"in {total_time:.2f}s ({total_time_ms:.0f}ms) "
+                    f"(Fetch: {fetch_time:.2f}s, Analyze: {analyze_time:.2f}s)"
+                )
+            
+            # ===== PERFORMANCE CHECK =====
+            if total_time > 35:  # > 35 seconds
+                if self.logger:
+                    self.logger.log_warning(
+                        f"⚠️ [PERFORMANCE] Scan took {total_time:.2f}s "
+                        f"(Target: 30s). Performance issue detected!"
+                    )
+            else:
+                if self.logger:
+                    self.logger.log_info("✅ [PERFORMANCE] Scan within target time")
+            
+            return opportunities
+            
+        except Exception as error:
+            if self.logger:
+                self.logger.log_error(f"❌ [SCAN ERROR] Failed to scan markets: {error}")
+            return []
 
     def analyze_market(self, market: BinaryMarket) -> Optional[Arbitrage]:
         if not market.active:

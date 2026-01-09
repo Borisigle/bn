@@ -23,6 +23,7 @@ def _usd(x: float) -> str:
 class ConsoleLogger:
     log_dir: str = "logs"
     log_file: str = "bot.log"
+    log_level: str = "info"
 
     console: Console = field(default_factory=lambda: Console(encoding="utf-8"), init=False)
     file_logger: logging.Logger = field(default_factory=lambda: logging.getLogger("bot"), init=False)
@@ -30,7 +31,10 @@ class ConsoleLogger:
     def __post_init__(self) -> None:
         os.makedirs(self.log_dir, exist_ok=True)
 
-        self.file_logger.setLevel(logging.INFO)
+        # Convert log level string to logging level
+        level = getattr(logging, self.log_level.upper(), logging.INFO)
+        
+        self.file_logger.setLevel(level)
         self.file_logger.propagate = False
         self.file_logger.handlers.clear()
 
@@ -39,7 +43,7 @@ class ConsoleLogger:
             os.path.join(self.log_dir, self.log_file),
             encoding='utf-8'
         )
-        fh.setLevel(logging.INFO)
+        fh.setLevel(level)
         fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
         self.file_logger.addHandler(fh)
 
@@ -49,13 +53,22 @@ class ConsoleLogger:
         title = Text("POLYMARKET 15MIN BOT - PAPER TRADING", style="bold cyan")
         self.console.print(Panel(title, expand=False, border_style="cyan"))
 
-    def _log(self, message: str, *, style: Optional[str] = None) -> None:
+    def _log(self, message: str, *, style: Optional[str] = None, level: str = "info") -> None:
         prefix = f"[{_ts()}] "
         if style:
             self.console.print(prefix + message, style=style)
         else:
             self.console.print(prefix + message)
-        self.file_logger.info(message)
+        
+        # Log to file based on level
+        if level == "debug":
+            self.file_logger.debug(message)
+        elif level == "info":
+            self.file_logger.info(message)
+        elif level == "warning":
+            self.file_logger.warning(message)
+        elif level == "error":
+            self.file_logger.error(message)
 
     def log_price_update(self, btc_price: float, pct_change: float) -> None:
         self._log(f"📊 BTC Price: {_usd(btc_price)} ({pct_change:+.2f}% last 5min)", style="bold")
@@ -100,10 +113,16 @@ class ConsoleLogger:
         self._log("⏰ FORCE CLOSE window reached - closing all positions", style="bold red")
 
     def log_info(self, message: str) -> None:
-        self._log(message)
+        self._log(message, level="info")
 
     def log_error(self, message: str) -> None:
-        self._log(f"❌ {message}", style="bold red")
+        self._log(f"❌ {message}", style="bold red", level="error")
+
+    def log_debug(self, message: str) -> None:
+        self._log(f"[DEBUG] {message}", style="dim", level="debug")
+
+    def log_warning(self, message: str) -> None:
+        self._log(f"⚠️ {message}", style="bold yellow", level="warning")
 
     def log_summary(self, total_trades: int, wins: int, losses: int, total_pnl: float, capital: float) -> None:
         self._log(
