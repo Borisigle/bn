@@ -11,18 +11,99 @@ export class ArbitragePureDetector {
     ) {}
 
     async scanMarkets(limit: number = 1000): Promise<Arbitrage[]> {
-        const markets = await this.polyClient.getTopMarkets(limit);
-
-        const opportunities: Arbitrage[] = [];
-        for (const m of markets) {
-            const arb = this.analyzeMarket(m);
-            if (!arb) continue;
-            if (arb.profit < this.minProfitThreshold) continue;
-            opportunities.push(arb);
+        const startTime = Date.now();
+        
+        console.log(`\n🔍 [SCAN START] ${new Date().toISOString()}`);
+        console.log(`⏱️ Starting to fetch markets...`);
+        
+        try {
+            // ===== FETCH MARKETS =====
+            const fetchStartTime = Date.now();
+            
+            console.log(`📡 Calling polyClient.getTopMarkets(limit: ${limit})...`);
+            
+            const markets = await this.polyClient.getTopMarkets(limit);
+            
+            const fetchTime = Date.now() - fetchStartTime;
+            console.log(`✅ FETCH COMPLETE: ${markets.length} markets in ${(fetchTime / 1000).toFixed(2)}s`);
+            console.log(`📈 Speed: ${(markets.length / (fetchTime / 1000)).toFixed(1)} markets/sec`);
+            
+            if (markets.length === 0) {
+                console.log(`⚠️ WARNING: No markets returned from API`);
+                return [];
+            }
+            
+            // ===== ANALYZE MARKETS =====
+            console.log(`\n📊 Starting to analyze ${markets.length} markets...`);
+            const analyzeStartTime = Date.now();
+            
+            let analyzed = 0;
+            let arbs = 0;
+            let errors = 0;
+            
+            const opportunities: Arbitrage[] = [];
+            
+            for (let i = 0; i < markets.length; i++) {
+                const market = markets[i];
+                
+                // Log every 100 markets
+                if (i % 100 === 0 && i > 0) {
+                    const elapsed = Date.now() - analyzeStartTime;
+                    const speed = (i / (elapsed / 1000)).toFixed(1);
+                    const remaining = markets.length - i;
+                    const eta = ((remaining / (i / (elapsed / 1000))) / 1000).toFixed(0);
+                    console.log(
+                        `📍 Progress: ${i}/${markets.length} (${(i / markets.length * 100).toFixed(1)}%) - ` +
+                        `${speed} markets/sec - ETA: ${eta}s`
+                    );
+                }
+                
+                try {
+                    const arb = this.analyzeMarket(market);
+                    if (arb) {
+                        if (arb.profit >= this.minProfitThreshold) {
+                            opportunities.push(arb);
+                            arbs++;
+                        }
+                    }
+                    analyzed++;
+                } catch (error) {
+                    errors++;
+                    if (errors <= 3) {
+                        console.log(`⚠️ Error analyzing market ${i}: ${error}`);
+                    }
+                }
+            }
+            
+            const analyzeTime = Date.now() - analyzeStartTime;
+            console.log(`\n✅ ANALYZE COMPLETE: Analyzed ${analyzed}/${markets.length} in ${(analyzeTime / 1000).toFixed(2)}s`);
+            console.log(`📊 Found ${arbs} arbitrage opportunities`);
+            console.log(`📈 Speed: ${(markets.length / (analyzeTime / 1000)).toFixed(1)} markets/sec`);
+            
+            // Sort by profit
+            opportunities.sort((a, b) => b.profit - a.profit);
+            
+            // ===== SUMMARY =====
+            const totalTime = Date.now() - startTime;
+            console.log(`\n🎯 [SCAN COMPLETE]`);
+            console.log(`├─ Total time: ${(totalTime / 1000).toFixed(2)}s`);
+            console.log(`├─ Fetch time: ${(fetchTime / 1000).toFixed(2)}s`);
+            console.log(`├─ Analyze time: ${(analyzeTime / 1000).toFixed(2)}s`);
+            console.log(`├─ Opportunities: ${opportunities.length}`);
+            console.log(`├─ Errors: ${errors}`);
+            
+            if (totalTime > 35000) {
+                console.log(`└─ ⚠️ SLOW: ${(totalTime / 1000).toFixed(2)}s (target: 30s)`);
+            } else {
+                console.log(`└─ ✅ FAST: ${(totalTime / 1000).toFixed(2)}s (target: 30s)`);
+            }
+            
+            return opportunities;
+            
+        } catch (error) {
+            console.log(`\n❌ [SCAN ERROR]`, error);
+            return [];
         }
-
-        opportunities.sort((a, b) => b.profit - a.profit);
-        return opportunities;
     }
 
     analyzeMarket(market: BinaryMarket): Arbitrage | null {
